@@ -3,8 +3,8 @@
 // ── 업로드 전 반드시 확인할 사항 ────────────────────────────
 //   uart_comm.h 상단의 아래 값을 노드에 맞게 수정:
 //     #define NODE_ID      1   ← 노드 번호 (1 / 2 / 3)
-//     #define UART_TX_PIN  17  ← RPi RX 에 연결된 GPIO
-//     #define UART_RX_PIN  16  ← RPi TX 에 연결된 GPIO
+//     #define UART_TX_PIN  25  ← RPi RX 에 연결된 GPIO
+//     #define UART_RX_PIN  26  ← RPi TX 에 연결된 GPIO
 //     #define UART_BAUD    115200
 //
 // ── Arduino IDE 보드 설정 ────────────────────────────────────
@@ -31,7 +31,7 @@ void setup() {
     // UART1 — 라즈베리파이 통신 초기화
     uartComm.begin();
 
-    Serial.printf("=== 초기화 완료. PING 대기 중 ===\n");
+    Serial.printf("=== 초기화 완료. PING/RANGE 요청 대기 중 ===\n");
 }
 
 void loop() {

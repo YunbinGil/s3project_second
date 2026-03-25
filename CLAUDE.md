@@ -272,6 +272,21 @@ RSSI_HI = (rssi_raw >> 8)    & 0xFF;
 RSSI_LO = (rssi_raw)         & 0xFF;
 ```
 
+### 구현 반영 메모 (2026-03)
+
+현재 코드 구현에서 거리측정 트리거는 다음을 사용한다.
+
+- `CMD_RANGE_REQUEST (0x56)` : `RPi -> Node`
+  - payload: `[SEQ_HI][SEQ_LO]`
+- `CMD_RANGE_REPORT (0x52)` : `Node -> RPi`
+  - payload: `[NODE_ID][DIST_HI][DIST_LO][RSSI_HI][RSSI_LO]`
+  - `DIST=0xFFFF`는 측정 실패 의미
+
+역할 분담:
+- `preCode/motor.ino` : UWB Responder + 기존 topic 제어(`command/*`) 유지
+- `ESP32/node_template/*` : UART 수신 + UWB Initiator + RPi 보고
+- `raspberryPI/src/main.cpp` : 요청 송신 + 리포트 수집 + 삼변측량
+
 ---
 
 ## 6. 심화 규칙 파일 포인터 (Progressive Disclosure)

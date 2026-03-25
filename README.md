@@ -303,6 +303,32 @@ make -j$(nproc)
 | `command/motor` | 신호등 → 차량 | 속도 설정 |
 | `command/led` | 신호등 → 차량 | LED 제어 |
 
+### motor.ino 통신 구조 요약 (실제 구현)
+
+차량 코드 `preCode/motor.ino`는 UWB 수신 프레임을 다음 두 경로로 분기합니다.
+
+1. 토픽 제어 프레임 (0x7E/0x7F + CRC16)
+   - `PUBLISH`, `ACK`, QoS, Topic 문자열, Payload 길이 필드를 사용합니다.
+   - 구독 토픽: `command/controlled`, `command/motor`, `command/led`, `command/range_probe`
+   - 발행 토픽: `telemetry/range/last` (최근 거리 측정값)
+2. 거리측정 프레임 (TWR 16바이트)
+   - `POLL(0)` → `POLL_ACK(1)` → `RANGE(2)` → `RANGE_REPORT(3)`
+   - 차량은 Responder(응답기)로 동작해 거리 계산 후 `RANGE_REPORT`를 송신합니다.
+
+### 거리측정 구현 (RPi ↔ Node1/2/3 ↔ 차량)
+
+현재 구현된 요청/응답은 다음과 같습니다.
+
+1. RPi가 각 노드로 `CMD_RANGE_REQUEST(0x56)` 전송
+2. 노드는 UWB Initiator로 차량에 `POLL`/`RANGE` 송신
+3. 차량은 UWB Responder로 거리 계산 후 `RANGE_REPORT` 송신
+4. 노드는 거리(cm) + RSSI를 `CMD_RANGE_REPORT(0x52)`로 RPi에 반환
+5. RPi는 Node1~3의 최신 거리로 2D 삼변측량을 계산해 차량 좌표 출력
+
+`CMD_RANGE_REPORT` payload 형식:
+- `[CMD][NODE_ID][DIST_HI][DIST_LO][RSSI_HI][RSSI_LO]`
+- 거리 실패 시 `DIST=0xFFFF`
+
 ---
 
 ## 트러블슈팅

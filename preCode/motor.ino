@@ -7,6 +7,9 @@
 #include "driver/mcpwm.h"
 #include <HardwareSerial.h>
 #include <DW1000Ng.hpp>
+#include <DW1000NgUtils.hpp>
+#include <DW1000NgRanging.hpp>
+#include <DW1000NgConstants.hpp>
 #include <SPI.h>
 
 
@@ -23,8 +26,8 @@ const char* password = "12345678"; // 와이파이 비밀번호
 const uint8_t PIN_SCK = 18;
 const uint8_t PIN_MISO = 19;
 const uint8_t PIN_MOSI = 23;
-const uint8_t PIN_SS = 17;
-const uint8_t PIN_RST = 16; 
+const uint8_t PIN_SS = 5;
+const uint8_t PIN_RST = 22; 
 const uint8_t PIN_IRQ = 4;
 
 #define PIN_PWMA 15
@@ -43,6 +46,14 @@ enum MessageType {
   ACK = 0x03,
   PING = 0x04,
   PONG = 0x05
+};
+
+enum UwbRangeMessageType {
+  UWB_POLL = 0,
+  UWB_POLL_ACK = 1,
+  UWB_RANGE = 2,
+  UWB_RANGE_REPORT = 3,
+  UWB_RANGE_FAILED = 255
 };
 
 // QoS 레벨
@@ -99,6 +110,17 @@ uint8_t txBuffer[256];
 int16_t numReceived = 0;
 String message;
 
+const int UWB_RANGE_FRAME_LEN = 16;
+byte rangeFrame[UWB_RANGE_FRAME_LEN] = {0};
+uint64_t timePollSent = 0;
+uint64_t timePollReceived = 0;
+uint64_t timePollAckSent = 0;
+uint64_t timePollAckReceived = 0;
+uint64_t timeRangeSent = 0;
+uint64_t timeRangeReceived = 0;
+bool rangingProtocolFailed = false;
+float lastComputedRangeMeters = -1.0;
+
 
 // ========== 함수 원형 선언 ==========
 uint16_t calculateCRC16(uint8_t* data, int len);
@@ -106,6 +128,10 @@ bool parseMessage(uint8_t* data, int len);
 void handlePublish(uint16_t msgId, uint8_t qos, String topic, uint8_t* payload, int len);
 void handleAck(uint16_t msgId);
 void sendAck(uint16_t msgId);
+bool handleRangingFrame(uint8_t* data, int len);
+void sendPollAckFrame();
+void sendRangeReportFrame(float meters);
+void sendRangeFailedFrame();
 
 // ==========================================
 // 4. 모터 제어 함수 (제공해주신 코드)
@@ -357,20 +383,112 @@ void processMessages() {
     message += (char)tempBuffer[i];
   }
   
-  if (tempBuffer[0] == START_BYTE && tempBuffer[dataLen-1] == END_BYTE) {
+  bool handledAsRanging = handleRangingFrame(tempBuffer, dataLen);
+
+  if (!handledAsRanging && tempBuffer[0] == START_BYTE && tempBuffer[dataLen-1] == END_BYTE) {
     //Serial.println("[UWB] Valid Frame Received. Parsing...");
     if (parseMessage(tempBuffer, dataLen)) {
       Serial.println("[UWB] Message Parsed Successfully.");
     } else {
       Serial.println("[UWB] Parsing Failed (CRC Error or Logic).");
     }
-  } else {
+  } else if (!handledAsRanging) {
     //Serial.println("[Warning] Frame format mismatch (Not our protocol)");
   }
   
   // 수신 처리 완료 후 다시 수신 모드로
   DW1000Ng::clearReceiveStatus();
   DW1000Ng::startReceive();
+}
+
+bool handleRangingFrame(uint8_t* data, int len) {
+  if (len != UWB_RANGE_FRAME_LEN) {
+    return false;
+  }
+
+  byte msgId = data[0];
+  if (msgId != UWB_POLL && msgId != UWB_RANGE) {
+    return false;
+  }
+
+  if (msgId == UWB_POLL) {
+    rangingProtocolFailed = false;
+    timePollReceived = DW1000Ng::getReceiveTimestamp();
+    sendPollAckFrame();
+    return true;
+  }
+
+  // UWB_RANGE
+  timeRangeReceived = DW1000Ng::getReceiveTimestamp();
+  if (!rangingProtocolFailed) {
+    timePollSent = DW1000NgUtils::bytesAsValue(data + 1, LENGTH_TIMESTAMP);
+    timePollAckReceived = DW1000NgUtils::bytesAsValue(data + 6, LENGTH_TIMESTAMP);
+    timeRangeSent = DW1000NgUtils::bytesAsValue(data + 11, LENGTH_TIMESTAMP);
+
+    double distance = DW1000NgRanging::computeRangeAsymmetric(
+        timePollSent,
+        timePollReceived,
+        timePollAckSent,
+        timePollAckReceived,
+        timeRangeSent,
+        timeRangeReceived);
+    distance = DW1000NgRanging::correctRange(distance);
+
+    if (distance <= 0.0 || distance > 100.0) {
+      sendRangeFailedFrame();
+      return true;
+    }
+
+    sendRangeReportFrame((float)distance);
+    lastComputedRangeMeters = (float)distance;
+
+    String payload = String((float)distance, 3);
+    publish("telemetry/range/last", payload);
+    Serial.printf("[UWB-RANGE] %.3f m\n", (float)distance);
+  } else {
+    sendRangeFailedFrame();
+  }
+
+  return true;
+}
+
+void sendPollAckFrame() {
+  memset(rangeFrame, 0, sizeof(rangeFrame));
+  rangeFrame[0] = UWB_POLL_ACK;
+  DW1000Ng::setTransmitData(rangeFrame, UWB_RANGE_FRAME_LEN);
+  DW1000Ng::startTransmit();
+
+  while (!DW1000Ng::isTransmitDone()) {
+    delay(1);
+  }
+  DW1000Ng::clearTransmitStatus();
+  timePollAckSent = DW1000Ng::getTransmitTimestamp();
+}
+
+void sendRangeReportFrame(float meters) {
+  memset(rangeFrame, 0, sizeof(rangeFrame));
+  rangeFrame[0] = UWB_RANGE_REPORT;
+  float encodedDistance = meters * DISTANCE_OF_RADIO_INV;
+  memcpy(rangeFrame + 1, &encodedDistance, sizeof(float));
+  DW1000Ng::setTransmitData(rangeFrame, UWB_RANGE_FRAME_LEN);
+  DW1000Ng::startTransmit();
+
+  while (!DW1000Ng::isTransmitDone()) {
+    delay(1);
+  }
+  DW1000Ng::clearTransmitStatus();
+}
+
+void sendRangeFailedFrame() {
+  memset(rangeFrame, 0, sizeof(rangeFrame));
+  rangeFrame[0] = UWB_RANGE_FAILED;
+  DW1000Ng::setTransmitData(rangeFrame, UWB_RANGE_FRAME_LEN);
+  DW1000Ng::startTransmit();
+
+  while (!DW1000Ng::isTransmitDone()) {
+    delay(1);
+  }
+  DW1000Ng::clearTransmitStatus();
 }
 
 bool parseMessage(uint8_t* data, int len) {
@@ -460,6 +578,13 @@ void handlePublish(uint16_t msgId, uint8_t qos, String topic, uint8_t* payload, 
       if (speed > 100.0) speed = 100.0;
       
       setTargetSpeed(speed, MQTT_CONTROL);
+    }
+  }
+  else if (topic == "command/range_probe") {
+    if (lastComputedRangeMeters >= 0.0f) {
+      publish("telemetry/range/last", String(lastComputedRangeMeters, 3));
+    } else {
+      publish("telemetry/range/last", "-1");
     }
   }
   else {
@@ -565,6 +690,7 @@ void setup() {
   subscribe("command/controlled");
   subscribe("command/motor");
   subscribe("command/led");
+  subscribe("command/range_probe");
 
   // DWM 수신 시작 (최초 한 번만)
   DW1000Ng::startReceive();

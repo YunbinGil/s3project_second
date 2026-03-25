@@ -11,6 +11,10 @@
 // ── 커맨드 ────────────────────────────────────────────────────
 #define CMD_PING  (0x50u)   // RPi → ESP32
 #define CMD_PONG  (0x51u)   // ESP32 → RPi
+#define CMD_RANGE_REPORT  (0x52u)   // ESP32 → RPi
+#define CMD_CTRL_FWD      (0x54u)   // RPi → ESP32
+#define CMD_MODE_NOTIFY   (0x55u)   // ESP32 → RPi
+#define CMD_RANGE_REQUEST (0x56u)   // RPi → ESP32
 
 // ── 버퍼 제한 ─────────────────────────────────────────────────
 #define PROTO_MAX_PAYLOAD  64u

@@ -1,14 +1,31 @@
 #pragma once
 
 #include <HardwareSerial.h>
+#include <DW1000Ng.hpp>
+#include <DW1000NgUtils.hpp>
+#include <DW1000NgTime.hpp>
 #include "protocol.h"
 
 // ── 노드별 설정 — 업로드 전에 반드시 노드에 맞게 수정 ──────────
 // Node1: NODE_ID=1 / Node2: NODE_ID=2 / Node3: NODE_ID=3
 #define NODE_ID      1
-#define UART_TX_PIN  17     // 라즈베리파이 RX 에 연결된 GPIO
-#define UART_RX_PIN  16     // 라즈베리파이 TX 에 연결된 GPIO
+#define UART_TX_PIN  25     // 라즈베리파이 RX 에 연결된 GPIO
+#define UART_RX_PIN  26     // 라즈베리파이 TX 에 연결된 GPIO
 #define UART_BAUD    115200
+
+#define UWB_PIN_SCK   18
+#define UWB_PIN_MISO  19
+#define UWB_PIN_MOSI  23
+#define UWB_PIN_SS    17
+#define UWB_PIN_RST   16
+#define UWB_PIN_IRQ   4
+
+#define UWB_FRAME_LEN 16
+#define UWB_POLL 0
+#define UWB_POLL_ACK 1
+#define UWB_RANGE 2
+#define UWB_RANGE_REPORT 3
+#define UWB_RANGE_FAILED 255
 // ──────────────────────────────────────────────────────────────
 
 // ── UartComm 클래스 ───────────────────────────────────────────
@@ -31,5 +48,26 @@ private:
     HardwareSerial _serial{1};
     ProtoParser    _parser;
 
+    enum class RangeState : uint8_t {
+        IDLE,
+        WAIT_POLL_ACK,
+        WAIT_RANGE_REPORT,
+    };
+
+    byte _uwbData[UWB_FRAME_LEN] = {0};
+    uint64_t _timePollSent = 0;
+    uint64_t _timePollAckReceived = 0;
+    RangeState _rangeState = RangeState::IDLE;
+    uint16_t _activeSeq = 0;
+    uint32_t _rangeDeadlineMs = 0;
+
     void handle_packet(const uint8_t *payload, uint8_t len);
+    void process_uwb();
+    void start_ranging(uint16_t seq);
+    void send_poll();
+    void send_range();
+    void report_range(uint16_t distance_cm, int16_t rssi_centi_dbm);
+    void fail_ranging(const char *reason);
+    static uint16_t meters_to_cm(float meters);
+
 };

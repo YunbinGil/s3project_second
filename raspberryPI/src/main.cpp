@@ -17,6 +17,8 @@
 #include <cstring>
 #include <csignal>
 #include <cerrno>
+#include <cmath>
+#include <array>
 
 #include <unistd.h>
 #include <sys/epoll.h>
@@ -30,9 +32,77 @@ static void on_signal(int) {
     g_running = 0;
 }
 
+struct NodeRange {
+    bool valid = false;
+    uint16_t distance_cm = 0;
+    int16_t rssi_centi_dbm = 0;
+    uint64_t updated_ms = 0;
+};
+
+static NodeRange g_ranges[4];
+static uint64_t g_now_ms = 0;
+
+static bool compute_position(const std::array<double, 3>& dist_m,
+                             double* out_x, double* out_y) {
+    // 고정 앵커 좌표(미터): Node1(0,0), Node2(2,0), Node3(1,1.732)
+    const double x1 = 0.0, y1 = 0.0;
+    const double x2 = 2.0, y2 = 0.0;
+    const double x3 = 1.0, y3 = 1.732;
+
+    const double d1 = dist_m[0];
+    const double d2 = dist_m[1];
+    const double d3 = dist_m[2];
+
+    const double A = 2.0 * (x2 - x1);
+    const double B = 2.0 * (y2 - y1);
+    const double C = (d1 * d1 - d2 * d2) - (x1 * x1 - x2 * x2) - (y1 * y1 - y2 * y2);
+
+    const double D = 2.0 * (x3 - x1);
+    const double E = 2.0 * (y3 - y1);
+    const double F = (d1 * d1 - d3 * d3) - (x1 * x1 - x3 * x3) - (y1 * y1 - y3 * y3);
+
+    const double det = (A * E) - (B * D);
+    if (std::fabs(det) < 1e-9) {
+        return false;
+    }
+
+    *out_x = (C * E - B * F) / det;
+    *out_y = (A * F - C * D) / det;
+    return true;
+}
+
+static void try_print_position() {
+    const uint64_t freshness_ms = 1500;
+    for (int node = 1; node <= 3; node++) {
+        if (!g_ranges[node].valid) return;
+        if (g_now_ms - g_ranges[node].updated_ms > freshness_ms) return;
+    }
+
+    std::array<double, 3> dist_m = {
+        g_ranges[1].distance_cm / 100.0,
+        g_ranges[2].distance_cm / 100.0,
+        g_ranges[3].distance_cm / 100.0,
+    };
+
+    double x = 0.0;
+    double y = 0.0;
+    if (!compute_position(dist_m, &x, &y)) {
+        fprintf(stderr, "[POS] trilateration failed: singular matrix\n");
+        return;
+    }
+
+    printf("[POS] car=(%.3f, %.3f)m  d=[%.2f, %.2f, %.2f]m\n",
+           x, y, dist_m[0], dist_m[1], dist_m[2]);
+}
+
 // ── 수신 콜백 ─────────────────────────────────────────────────────────────────
 static void on_pong(int node_id, const uint8_t* payload, uint8_t len) {
     if (len < 1) return;
+
+    struct timespec ts_now{};
+    clock_gettime(CLOCK_MONOTONIC, &ts_now);
+    g_now_ms = static_cast<uint64_t>(ts_now.tv_sec) * 1000ULL
+             + static_cast<uint64_t>(ts_now.tv_nsec / 1000000ULL);
 
     if (payload[0] == proto::CMD_PONG && len >= 4) {
         // 빅 엔디안 역직렬화 (CLAUDE.md §5: 비트 시프트 연산 필수)
@@ -40,6 +110,33 @@ static void on_pong(int node_id, const uint8_t* payload, uint8_t len) {
                            |  static_cast<uint16_t>(payload[2]);
         const uint8_t  nid = payload[3];
         printf("[RX] PONG ← Node%d  |  NodeID=%u  SEQ=%u\n", node_id, nid, seq);
+    } else if (payload[0] == proto::CMD_RANGE_REPORT && len >= 6) {
+        const uint8_t reported_node = payload[1];
+        const uint16_t distance_cm = (static_cast<uint16_t>(payload[2]) << 8)
+                                   |  static_cast<uint16_t>(payload[3]);
+        const int16_t rssi_centi_dbm = static_cast<int16_t>(
+            (static_cast<uint16_t>(payload[4]) << 8) | static_cast<uint16_t>(payload[5])
+        );
+
+        if (reported_node < 1 || reported_node > 3) {
+            printf("[RX] RANGE_REPORT invalid node=%u\n", reported_node);
+            return;
+        }
+
+        if (distance_cm == 0xFFFFu) {
+            printf("[RX] RANGE_REPORT Node%u failed\n", reported_node);
+            g_ranges[reported_node].valid = false;
+            return;
+        }
+
+        g_ranges[reported_node].valid = true;
+        g_ranges[reported_node].distance_cm = distance_cm;
+        g_ranges[reported_node].rssi_centi_dbm = rssi_centi_dbm;
+        g_ranges[reported_node].updated_ms = g_now_ms;
+
+        printf("[RX] RANGE_REPORT Node%u  dist=%u cm  rssi=%.2f dBm\n",
+               reported_node, distance_cm, rssi_centi_dbm / 100.0);
+        try_print_position();
     } else {
         printf("[RX] Node%d: 알 수 없는 cmd=0x%02X len=%u\n", node_id, payload[0], len);
     }
@@ -58,6 +155,24 @@ static void send_ping_all(UartManager& mgr, const int* active_nodes, int active_
 
         if (mgr.send(node, payload, 3)) {
             printf("[TX] PING → Node%d  SEQ=%u\n", node, *seq);
+        }
+        (*seq)++;
+    }
+}
+
+static void send_range_request_all(UartManager& mgr,
+                                   const int* active_nodes,
+                                   int active_count,
+                                   uint16_t* seq) {
+    for (int index = 0; index < active_count; index++) {
+        const int node = active_nodes[index];
+        uint8_t payload[3];
+        payload[0] = proto::CMD_RANGE_REQUEST;
+        payload[1] = (*seq >> 8) & 0xFF;
+        payload[2] = *seq & 0xFF;
+
+        if (mgr.send(node, payload, 3)) {
+            printf("[TX] RANGE_REQUEST → Node%d  SEQ=%u\n", node, *seq);
         }
         (*seq)++;
     }
@@ -124,7 +239,8 @@ int main(int argc, char* argv[]) {
     printf("=== UART PING 테스트 시작 (Ctrl+C 로 종료) ===\n");
 
     // ── 단일 스레드 epoll 이벤트 루프 ────────────────────────────────────────
-    uint16_t seq = 0;
+    uint16_t ping_seq = 0;
+    uint16_t range_seq = 0;
     struct epoll_event events[8];
 
     while (g_running) {
@@ -142,7 +258,13 @@ int main(int argc, char* argv[]) {
                 // timerfd 소비 (읽지 않으면 계속 EPOLLIN 발생)
                 uint64_t expirations;
                 if (read(tfd, &expirations, sizeof(expirations)) > 0) {
-                    send_ping_all(mgr, active_nodes, active_count, &seq);
+                    struct timespec ts_now{};
+                    clock_gettime(CLOCK_MONOTONIC, &ts_now);
+                    g_now_ms = static_cast<uint64_t>(ts_now.tv_sec) * 1000ULL
+                             + static_cast<uint64_t>(ts_now.tv_nsec / 1000000ULL);
+
+                    send_ping_all(mgr, active_nodes, active_count, &ping_seq);
+                    send_range_request_all(mgr, active_nodes, active_count, &range_seq);
                 }
             } else {
                 // UART 수신 처리

@@ -15,6 +15,10 @@ static constexpr uint8_t DLE_XOR = 0x20;   // DLE stuffing XOR mask
 // ── 커맨드 ────────────────────────────────────────────────────
 static constexpr uint8_t CMD_PING = 0x50;  // RPi → ESP32
 static constexpr uint8_t CMD_PONG = 0x51;  // ESP32 → RPi
+static constexpr uint8_t CMD_RANGE_REPORT = 0x52;   // ESP32 → RPi
+static constexpr uint8_t CMD_CTRL_FWD = 0x54;       // RPi → ESP32
+static constexpr uint8_t CMD_MODE_NOTIFY = 0x55;    // ESP32 → RPi
+static constexpr uint8_t CMD_RANGE_REQUEST = 0x56;  // RPi → ESP32
 
 // ── 버퍼 제한 ─────────────────────────────────────────────────
 static constexpr size_t MAX_PAYLOAD = 64;
