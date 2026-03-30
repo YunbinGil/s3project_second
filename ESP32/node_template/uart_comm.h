@@ -8,9 +8,9 @@
 
 // ── 노드별 설정 — 업로드 전에 반드시 노드에 맞게 수정 ──────────
 // Node1: NODE_ID=1 / Node2: NODE_ID=2 / Node3: NODE_ID=3
-#define NODE_ID      1
-#define UART_TX_PIN  17     // 라즈베리파이 RX 에 연결된 GPIO
-#define UART_RX_PIN  16     // 라즈베리파이 TX 에 연결된 GPIO
+#define NODE_ID      2
+#define UART_TX_PIN  17     // TXD2 (GPIO17) — RPi RX에 연결
+#define UART_RX_PIN  16     // RXD2 (GPIO16) — RPi TX에 연결
 #define UART_BAUD    115200
 
 #define UWB_PIN_SCK   18
@@ -45,8 +45,8 @@ public:
     void send(const uint8_t *payload, uint8_t len);
 
 private:
-    // UART0(Serial)는 USB 디버그 전용 — 반드시 UART1 사용
-    HardwareSerial _serial{1};
+    // UART0(Serial)는 USB 디버그 전용 — GPIO16(RXD2)/GPIO17(TXD2)는 UART2 기본 핀
+    HardwareSerial _serial{2};
     ProtoParser    _parser;
 
     enum class RangeState : uint8_t {

@@ -150,26 +150,26 @@ dtoverlay=uart4
 
 **역할**: RPi와 UART 통신 + DWM1000으로 차량과 UWB 거리 측정 **동시 수행**
 
-**⚠️ 핀 충돌 해소**: DWM1000 SPI가 GPIO 16/17을 점유하므로 UART1 핀 **반드시 재배치**
+**핀 배치**: DWM1000 SPI = SS(GPIO5)/RST(GPIO22), UART2 = RXD2(GPIO16)/TXD2(GPIO17)
 
 | GPIO | 기능 | 비고 |
 |------|------|------|
-| 16 | DWM1000 RST | SPI 제어 |
-| 17 | DWM1000 SS (CS) | SPI 제어 |
+| 5 | DWM1000 SS (CS) | SPI 제어 |
+| 22 | DWM1000 RST | SPI 제어 |
 | 18 | DWM1000 SCK | SPI 클록 |
 | 19 | DWM1000 MISO | SPI 데이터 |
 | 23 | DWM1000 MOSI | SPI 데이터 |
 | 4 | DWM1000 IRQ | (initializeNoInterrupt 시 미사용 가능) |
-| **25** | **UART1 TX** ← 재배치 | RPi RX에 연결 |
-| **26** | **UART1 RX** ← 재배치 | RPi TX에 연결 |
+| **16** | **UART2 RX** (RXD2) | RPi TX에 연결 |
+| **17** | **UART2 TX** (TXD2) | RPi RX에 연결 |
 | 2 | 내장 LED | 디버그 |
 
 **#define 블록 (필수):**
 ```cpp
-// 신호등 노드 — DWM1000 탑재로 UART1 핀 재배치 필수
+// 신호등 노드 — UART2 사용 (RXD2=GPIO16, TXD2=GPIO17)
 #define NODE_ID      1        // 1, 2, 3 중 노드에 맞게 수정
-#define UART_TX_PIN  25       // GPIO16/17은 DWM1000 SPI가 점유
-#define UART_RX_PIN  26
+#define UART_TX_PIN  17       // TXD2 (GPIO17) → RPi RX에 연결
+#define UART_RX_PIN  16       // RXD2 (GPIO16) → RPi TX에 연결
 #define UART_BAUD    115200
 ```
 
@@ -332,7 +332,7 @@ s3project/
 └── ESP32/                     # ← Arduino IDE (로컬 PC) 에서 빌드·업로드
     ├── node_template/         # 신호등 노드 ×3 공통 스케치
     │   ├── node_template.ino  # setup/loop (UART + DWM1000)
-    │   ├── uart_comm.h/cpp    # HardwareSerial UART1 래퍼 (GPIO 25/26)
+    │   ├── uart_comm.h/cpp    # HardwareSerial UART1 래퍼 (RXD2=GPIO16, TXD2=GPIO17)
     │   ├── uwb_comm.h/cpp     # DWM1000 UWB 송수신 래퍼
     │   ├── protocol.h/cpp     # CRC-8 FSM 파서 (UART 프로토콜)
     │   └── uwb_protocol.h/cpp # CRC-16 토픽 파서 (UWB 프로토콜)
@@ -354,7 +354,7 @@ s3project/
 
 ```
 1. Arduino IDE → 파일 → 열기 → ESP32/node_template/node_template.ino
-2. uart_comm.h 상단의 NODE_ID (1/2/3) 수정 (UART_TX/RX_PIN은 25/26 고정)
+2. uart_comm.h 상단의 NODE_ID (1/2/3) 수정 (UART_TX_PIN=17, UART_RX_PIN=16 고정)
 3. 도구 → 보드 → esp32 by Espressif → ESP32 Dev Module
 4. 도구 → 포트 → ESP32 연결된 COM 포트 선택
 5. 스케치 → 업로드 (Ctrl+U)
@@ -390,7 +390,7 @@ cmake .. && make -j$(nproc)
 |------|-----|
 | 모듈 | Decawave DWM1000 |
 | 통신 표준 | IEEE 802.15.4a UWB |
-| SPI 핀 | SCK=18, MISO=19, MOSI=23, SS=17, RST=16, IRQ=4 |
+| SPI 핀 | SCK=18, MISO=19, MOSI=23, SS=5, RST=22, IRQ=4 |
 | Arduino 라이브러리 | `DW1000Ng` (by F-Army) |
 | 채널 | Channel 5 |
 | 데이터 레이트 | 6.8 Mbps |
@@ -420,8 +420,8 @@ device_configuration_t DEFAULT_CONFIG = {
     PreambleCode::CODE_3
 };
 
-SPI.begin(18, 19, 23, 17);             // SCK, MISO, MOSI, SS
-DW1000Ng::initializeNoInterrupt(17, 16); // SS, RST
+SPI.begin(18, 19, 23, 5);              // SCK, MISO, MOSI, SS
+DW1000Ng::initializeNoInterrupt(5, 22);  // SS, RST
 DW1000Ng::applyConfiguration(DEFAULT_CONFIG);
 DW1000Ng::setDeviceAddress(NODE_ADDR);
 DW1000Ng::setNetworkId(10);
@@ -634,7 +634,7 @@ DW1000Ng::startReceive();
 | `EPOLLET` 엣지 트리거 | UART에서 불안정 — 레벨 트리거만 사용 |
 | `select()` / `poll()` | epoll로 대체 |
 | ESP-IDF API / `idf.py` 명령 사용 | Arduino 프레임워크 사용 — ESP-IDF 직접 사용 금지 |
-| DWM1000 SPI 핀(16,17)을 UART1에 할당 | 핀 충돌로 SPI/UART 동시 동작 불가 |
+| DWM1000 SPI 핀(SS=5, RST=22)을 다른 용도로 재할당 | SPI 통신 불가 |
 | `DW1000Ng::initialize()` (인터럽트 방식) | loop() 폴링 FSM과 일관성 유지 |
 | `targetSpeed` 직접 대입 | `setTargetSpeed()` 미경유 시 FSM 게이팅 우회 |
 | `analogWrite()` / `ledcWrite()` 모터 제어 | MCPWM API 사용 의무 |

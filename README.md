@@ -337,7 +337,7 @@ make -j$(nproc)
 |------|------|------|
 | `/dev/ttyESP_Node*` 없음 | udev 규칙 미설치 또는 재부팅 안 함 | `sudo bash scripts/setup_uart.sh` 후 재부팅 |
 | UART 통신 안 됨 | TX↔RX 교차 미연결 또는 GND 미연결 | 배선 확인 (RPi TX → ESP32 RX, RPi RX ← ESP32 TX) |
-| `DW1000Ng` 초기화 실패 | SPI 핀 연결 오류 | SCK=18, MISO=19, MOSI=23, SS=17, RST=16 확인 |
+| `DW1000Ng` 초기화 실패 | SPI 핀 연결 오류 | SCK=18, MISO=19, MOSI=23, SS=5, RST=22 확인 |
 | 차량 WiFi 접속 불가 | softAP 미시작 | 시리얼 모니터에서 WiFi 초기화 로그 확인 |
 | UWB 거리 측정 불가 | 안테나 딜레이 미설정 또는 네트워크 ID 불일치 | `setAntennaDelay(16436)`, `setNetworkId(10)` 확인 |
 | `MQTT_CONTROL` 모드에서 웹 조작 불가 | 정상 동작 | UWB로 `command/controlled = 0` 전송하여 HTTP 모드 복귀 |

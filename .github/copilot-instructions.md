@@ -25,7 +25,7 @@
 - 호스트: **Raspberry Pi 4/5, Linux, C++17** (x86 리눅스나 Windows 절대 가정 금지)
 - 주변기기: **신호등 ESP32 × 3 + 차량 ESP32 × 1, Arduino 프레임워크** (ESP-IDF 직접 사용 금지, `idf.py` 명령 제안 금지)
 - 연결: **Remote SSH → Raspberry Pi**
-- 신호등 ESP32: **DWM1000 UWB + UART1 (GPIO 25/26)** — RPi와 UART 통신 + 차량과 UWB 거리 측정
+- 신호등 ESP32: **DWM1000 UWB + UART2 (RXD2=GPIO16, TXD2=GPIO17)** — RPi와 UART 통신 + 차량과 UWB 거리 측정
 - 차량 ESP32: **DWM1000 UWB + TB6612FNG 모터 (MCPWM) + WiFi AP** — RPi 미연결, 독립 동작
 
 ## 주요 금지 규칙 요약
@@ -40,7 +40,7 @@
 | `EPOLLET` 엣지 트리거 | UART에서 불안정 — 레벨 트리거만 사용 |
 | `select()` / `poll()` | epoll로 대체 |
 | ESP-IDF API / `idf.py` 명령 사용 | Arduino 프레임워크 사용 — ESP-IDF 직접 사용 금지 |
-| DWM1000 SPI 핀(16,17)을 UART1에 할당 | 핀 충돌로 SPI/UART 동시 동작 불가 |
+| DWM1000 SPI 핀(SS=GPIO5, RST=GPIO22)을 다른 용도로 재할당 | SPI 통신 불가 |
 | `DW1000Ng::initialize()` (인터럽트 방식) | loop() 폴링 FSM과 일관성 유지 |
 | `targetSpeed` 직접 대입 | `setTargetSpeed()` 미경유 시 FSM 게이팅 우회 |
 | `analogWrite()` / `ledcWrite()` 모터 제어 | MCPWM API 사용 의무 |
