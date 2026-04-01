@@ -190,7 +190,7 @@ static void process_uwb() {
 
     // 수신 데이터 검증
     const int dataLen = DW1000Ng::getReceivedDataLength();
-    if (dataLen != UWB_FRAME_LEN) {
+    if (dataLen < UWB_FRAME_LEN) { // 수정됨: != 대신 < 를 사용하여 CRC가 붙어오는 것을 허용
         DW1000Ng::clearReceiveStatus();
         DW1000Ng::startReceive();
         if (rangeState != RangeState::IDLE) {
@@ -335,6 +335,14 @@ void loop() {
         } else if (cmd.length() > 0) {
             Serial.println("[INFO] 명령: range | debug | stat | info");
         }
+    }
+
+    // 주기적 ranging (autoRanging 모드)
+    if (autoRanging && rangeState == RangeState::IDLE && !pendingRetry &&
+        (int32_t)(millis() - lastRangeAt) >= (int32_t)RANGE_INTERVAL_MS) {
+        lastRangeAt = millis();
+        retryCount  = 0;
+        start_ranging();
     }
 
     // 자동 재시도

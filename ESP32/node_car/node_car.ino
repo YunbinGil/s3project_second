@@ -430,55 +430,64 @@ void sendModeNotifyFrame(uint8_t mode) {
 // ============================================================
 // rxTimestamp: processMessages에서 clearReceiveStatus 전에 이미 취득한 값
 bool handleRangingFrame(uint8_t* data, int len, uint64_t rxTimestamp) {
-    if (len != UWB_RANGE_FRAME_LEN) return false;
-
+    if (len < 1) return false;
+    
     byte msgId = data[0];
-    if (msgId != UWB_POLL && msgId != UWB_RANGE) return false;
+    if (msgId == UWB_POLL || msgId == UWB_RANGE) {
+        // 정확히 일치(==) 대신, 최소 길이(>=)만 만족하면 통과시킴 (CRC 바이트 무시)
+        if (len < UWB_RANGE_FRAME_LEN) {
+            Serial.println("[UWB] 에러: TWR 프레임 길이가 너무 짧습니다.");
+            return false;
+        }
+        
+        if (msgId == UWB_POLL) {
+            rangingProtocolFailed = false;
+            timePollReceived = rxTimestamp;
+            // Serial.println("[UWB] POLL 수신 → POLL_ACK 전송 중...");
+            sendPollAckFrame();
+            // Serial.println("[UWB] POLL_ACK 전송 완료 → RANGE 대기");
+            waitingForRange = true;
+            return true;
+        }
 
-    if (msgId == UWB_POLL) {
-        rangingProtocolFailed = false;
-        timePollReceived = rxTimestamp;   // 이미 clearReceiveStatus 전에 취득된 값
-        // Serial.println("[UWB] POLL 수신 → POLL_ACK 전송 중...");
-        sendPollAckFrame();
-        // Serial.println("[UWB] POLL_ACK 전송 완료 → RANGE 대기");
-        waitingForRange = true;
+        // UWB_RANGE 수신 처리
+        uint64_t timeRangeReceived = rxTimestamp;
+        waitingForRange = false;
+        Serial.println("[UWB] RANGE 수신 → 거리 계산 중...");
+        if (!rangingProtocolFailed) {
+            uint64_t timePollSent        = DW1000NgUtils::bytesAsValue(data + 1,  LENGTH_TIMESTAMP);
+            uint64_t timePollAckReceived = DW1000NgUtils::bytesAsValue(data + 6,  LENGTH_TIMESTAMP);
+            uint64_t timeRangeSent       = DW1000NgUtils::bytesAsValue(data + 11, LENGTH_TIMESTAMP);
+
+            double distance = DW1000NgRanging::computeRangeAsymmetric(
+                timePollSent, timePollReceived,
+                timePollAckSent, timePollAckReceived,
+                timeRangeSent, timeRangeReceived);
+            distance = DW1000NgRanging::correctRange(distance);
+            Serial.printf("[UWB] 계산된 거리: %.3f m\n", distance);
+
+            if (distance <= 0.0 || distance > 100.0) {
+                Serial.printf("[UWB] 범위 밖 (%.3f m) → RANGE_FAILED 전송\n", distance);
+                sendRangeFailedFrame();
+            } else {
+                Serial.printf("[UWB] 유효 거리 → RANGE_REPORT 전송: %.3f m\n", distance);
+                sendRangeReportFrame((float)distance);
+                lastComputedRangeMeters = (float)distance;
+                publish("telemetry/range/last", String((float)distance, 3));
+            }
+        } else {
+            Serial.println("[UWB] rangingProtocolFailed=true → RANGE_FAILED 전송");
+            sendRangeFailedFrame();
+        }
         return true;
     }
-
-    // UWB_RANGE
-    uint64_t timeRangeReceived = rxTimestamp;  // 이미 clearReceiveStatus 전에 취득된 값
-    waitingForRange = false;
-    // Serial.println("[UWB] RANGE 수신 → 거리 계산 중...");
-    if (!rangingProtocolFailed) {
-        uint64_t timePollSent        = DW1000NgUtils::bytesAsValue(data + 1,  LENGTH_TIMESTAMP);
-        uint64_t timePollAckReceived = DW1000NgUtils::bytesAsValue(data + 6,  LENGTH_TIMESTAMP);
-        uint64_t timeRangeSent       = DW1000NgUtils::bytesAsValue(data + 11, LENGTH_TIMESTAMP);
-
-        double distance = DW1000NgRanging::computeRangeAsymmetric(
-            timePollSent, timePollReceived,
-            timePollAckSent, timePollAckReceived,
-            timeRangeSent, timeRangeReceived);
-        distance = DW1000NgRanging::correctRange(distance);
-        Serial.printf("[UWB] 계산된 거리: %.3f m\n", distance);
-
-        if (distance <= 0.0 || distance > 100.0) {
-            Serial.printf("[UWB] 범위 밖 (%.3f m) → RANGE_FAILED 전송\n", distance);
-            sendRangeFailedFrame();
-        } else {
-            Serial.printf("[UWB] 유효 거리 → RANGE_REPORT 전송: %.3f m\n", distance);
-            sendRangeReportFrame((float)distance);
-            lastComputedRangeMeters = (float)distance;
-            publish("telemetry/range/last", String((float)distance, 3));
-            Serial.printf("[UWB-RANGE] %.3f m\n", (float)distance);
-        }
-    } else {
-        Serial.println("[UWB] rangingProtocolFailed=true → RANGE_FAILED 전송");
-        sendRangeFailedFrame();
-    }
-    return true;
+    return false;
 }
 
 bool parseMessage(uint8_t* data, int len) {
+
+    if (len < 11) return false; // 최소 헤더 길이 검사
+
     int pos = 1;
     uint8_t  msgType   = data[pos++];
     uint16_t msgId     = ((uint16_t)data[pos] << 8) | data[pos + 1]; pos += 2;
@@ -491,13 +500,26 @@ bool parseMessage(uint8_t* data, int len) {
     for (int i = 0; i < topicLen; i++) topic += (char)data[pos++];
 
     uint16_t payloadLen = ((uint16_t)data[pos] << 8) | data[pos + 1]; pos += 2;
-    if (pos + (int)payloadLen + 3 > len) return false;
+    
+    int expectedLen = pos + payloadLen + 3;
+
+    if (expectedLen > len) {
+        Serial.println("[Error] Packet too short for parsed length");
+        return false; 
+    }
+
+    // 진짜 길이가 끝나는 지점에 END_BYTE가 있는지 확인
+    if (data[expectedLen - 1] != END_BYTE) {
+        Serial.println("[Error] END_BYTE mismatch");
+        return false;
+    }
 
     uint8_t* payload = data + pos;
     pos += payloadLen;
 
     uint16_t receivedCRC   = ((uint16_t)data[pos] << 8) | data[pos + 1];
     uint16_t calculatedCRC = calculateCRC16(data + 1, pos - 1);
+    
     if (receivedCRC != calculatedCRC) {
         Serial.println("[Error] CRC mismatch");
         return false;
@@ -573,11 +595,6 @@ void processMessages() {
     byte tempBuffer[dataLen];
     DW1000Ng::getReceivedData(tempBuffer, dataLen);
 
-    // ★★★ 핵심 순서 ★★★
-    // (1) getReceiveTimestamp() → RX_TIME 레지스터 읽기 (SYS_STATUS와 별개)
-    // (2) clearReceiveStatus()  → SYS_STATUS의 RX 완료 비트 클리어
-    //     이 순서를 지키면 다음 processMessages() 호출에서 isReceiveDone()=false 보장
-    // (3) 이후 TX 함수들 내부에서 startReceive() 호출
     uint64_t rxTimestamp = DW1000Ng::getReceiveTimestamp();  // (1)
     DW1000Ng::clearReceiveStatus();                          // (2)
 
@@ -589,13 +606,13 @@ void processMessages() {
     bool handledAsRanging = handleRangingFrame(tempBuffer, dataLen, rxTimestamp);
 
     if (!handledAsRanging) {
-        if (tempBuffer[0] == START_BYTE && tempBuffer[dataLen - 1] == END_BYTE) {
-            if (parseMessage(tempBuffer, dataLen))
-                Serial.println("[UWB] Message Parsed Successfully.");
-            else
-                Serial.println("[UWB] Parsing Failed (CRC Error or Logic).");
+        if (tempBuffer[0] == START_BYTE) {
+            if (parseMessage(tempBuffer, dataLen)) {
+                // Serial.println("[UWB] MQTT Message Parsed Successfully.");
+            } else {
+                Serial.println("[UWB] MQTT Parsing Failed (CRC or Format Error).");
+            }
         }
-        // MQTT 경로: TX 함수 호출 없으므로 여기서 startReceive
         DW1000Ng::startReceive();
     }
     // Ranging 경로: sendPollAckFrame / sendRangeReportFrame / sendRangeFailedFrame
