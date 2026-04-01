@@ -75,9 +75,9 @@ device_configuration_t DEFAULT_CONFIG = {
     false, true, true, true, false,
     SFDMode::STANDARD_SFD,
     Channel::CHANNEL_5,
-    DataRate::RATE_6800KBPS,
+    DataRate::RATE_850KBPS,
     PulseFrequency::FREQ_16MHZ,
-    PreambleLength::LEN_128,
+    PreambleLength::LEN_256,
     PreambleCode::CODE_3
 };
 
@@ -351,7 +351,6 @@ void sendRangeReportFrame(float meters) {
     DW1000Ng::startReceive();                                // [fix-3]
 }
 
-// [fix-1][fix-2][fix-3] RANGE_FAILED 전송
 void sendRangeFailedFrame() {
     memset(rangeFrame, 0, sizeof(rangeFrame));
     rangeFrame[0] = UWB_RANGE_FAILED;
@@ -439,9 +438,9 @@ bool handleRangingFrame(uint8_t* data, int len, uint64_t rxTimestamp) {
     if (msgId == UWB_POLL) {
         rangingProtocolFailed = false;
         timePollReceived = rxTimestamp;   // 이미 clearReceiveStatus 전에 취득된 값
-        Serial.println("[UWB] POLL 수신 → POLL_ACK 전송 중...");
+        // Serial.println("[UWB] POLL 수신 → POLL_ACK 전송 중...");
         sendPollAckFrame();
-        Serial.println("[UWB] POLL_ACK 전송 완료 → RANGE 대기");
+        // Serial.println("[UWB] POLL_ACK 전송 완료 → RANGE 대기");
         waitingForRange = true;
         return true;
     }
@@ -449,7 +448,7 @@ bool handleRangingFrame(uint8_t* data, int len, uint64_t rxTimestamp) {
     // UWB_RANGE
     uint64_t timeRangeReceived = rxTimestamp;  // 이미 clearReceiveStatus 전에 취득된 값
     waitingForRange = false;
-    Serial.println("[UWB] RANGE 수신 → 거리 계산 중...");
+    // Serial.println("[UWB] RANGE 수신 → 거리 계산 중...");
     if (!rangingProtocolFailed) {
         uint64_t timePollSent        = DW1000NgUtils::bytesAsValue(data + 1,  LENGTH_TIMESTAMP);
         uint64_t timePollAckReceived = DW1000NgUtils::bytesAsValue(data + 6,  LENGTH_TIMESTAMP);
@@ -657,14 +656,6 @@ void setup() {
 // CLAUDE.md §4.3 loop() 구조
 void loop() {
     // 진단: loop() 생존 확인 + isReceiveDone 상태 (1초 주기)
-    static unsigned long lastAlivePrint = 0;
-    if (millis() - lastAlivePrint >= 1000) {
-        lastAlivePrint = millis();
-        Serial.printf("[ALIVE] t=%lu  rxDone=%d  numReceived=%d  waitRange=%d\n",
-                      millis(), DW1000Ng::isReceiveDone() ? 1 : 0, numReceived,
-                      waitingForRange ? 1 : 0);
-    }
-
     server.handleClient();       // HTTP 클라이언트 처리
 
     processMessages();           // UWB 수신 처리

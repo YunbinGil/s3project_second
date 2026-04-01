@@ -74,9 +74,9 @@ device_configuration_t DEFAULT_CONFIG = {
     false,
     SFDMode::STANDARD_SFD,
     Channel::CHANNEL_5,     // 2번 대신 기본 5번 사용
-    DataRate::RATE_6800KBPS, // 110KBPS -> 6.8MBPS (고속 모드가 설정 오류가 적음)
+    DataRate::RATE_850KBPS, // 110KBPS -> 6.8MBPS (고속 모드가 설정 오류가 적음)
     PulseFrequency::FREQ_16MHZ,
-    PreambleLength::LEN_128, // 고속 모드에 맞는 짧은 프리앰블
+    PreambleLength::LEN_256, // 고속 모드에 맞는 짧은 프리앰블
     PreambleCode::CODE_3
 };
 
@@ -460,12 +460,19 @@ bool handleRangingFrame(uint8_t* data, int len) {
 }
 
 void sendPollAckFrame() {
+  DW1000Ng::forceTRxOff();
+
   memset(rangeFrame, 0, sizeof(rangeFrame));
   rangeFrame[0] = UWB_POLL_ACK;
   DW1000Ng::setTransmitData(rangeFrame, UWB_RANGE_FRAME_LEN);
   DW1000Ng::startTransmit();
 
+  uint32_t deadline = millis() + 50; 
   while (!DW1000Ng::isTransmitDone()) {
+    if (millis() > deadline) {
+      Serial.println("[UWB] POLL_ACK 송신 타임아웃!");
+      break; 
+    }
     delay(1);
   }
   DW1000Ng::clearTransmitStatus();
@@ -473,27 +480,36 @@ void sendPollAckFrame() {
 }
 
 void sendRangeReportFrame(float meters) {
+  DW1000Ng::forceTRxOff();
+
   memset(rangeFrame, 0, sizeof(rangeFrame));
   rangeFrame[0] = UWB_RANGE_REPORT;
   float encodedDistance = meters * DISTANCE_OF_RADIO_INV;
   memcpy(rangeFrame + 1, &encodedDistance, sizeof(float));
   rangeFrame[5] = CAR_ID;  // 차량 식별자 삽입
+
   DW1000Ng::setTransmitData(rangeFrame, UWB_RANGE_FRAME_LEN);
   DW1000Ng::startTransmit();
 
+  uint32_t deadline = millis() + 50;
   while (!DW1000Ng::isTransmitDone()) {
+    if (millis() > deadline) break;
     delay(1);
   }
   DW1000Ng::clearTransmitStatus();
 }
 
 void sendRangeFailedFrame() {
+  DW1000Ng::forceTRxOff();
+
   memset(rangeFrame, 0, sizeof(rangeFrame));
   rangeFrame[0] = UWB_RANGE_FAILED;
   DW1000Ng::setTransmitData(rangeFrame, UWB_RANGE_FRAME_LEN);
   DW1000Ng::startTransmit();
 
+  uint32_t deadline = millis() + 50;
   while (!DW1000Ng::isTransmitDone()) {
+    if (millis() > deadline) break;
     delay(1);
   }
   DW1000Ng::clearTransmitStatus();
