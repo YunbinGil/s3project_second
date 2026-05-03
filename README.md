@@ -64,6 +64,13 @@ s3project/
     │   ├── uwb_comm.h/cpp     # DWM1000 UWB 래퍼
     │   └── uwb_protocol.h/cpp # CRC-16 토픽 파서
     │
+    ├── node_signal/           # 신호등 노드 실제 구현 (node_template 확장)
+    │   ├── node_signal.ino    # FSM + LED + UWB signal_state + UART
+    │   ├── uart_comm.h/cpp    # UART1 래퍼 (GPIO 25/26)
+    │   ├── protocol.h/cpp     # CRC-8 FSM 파서
+    │   ├── uwb_signal.h/cpp   # UWB signal_state 송수신
+    │   └── (uwb_signal 관련)
+    │
     └── node_car/              # 차량 노드 ×1
         ├── node_car.ino
         ├── uwb_comm.h/cpp     # DWM1000 UWB 래퍼
@@ -184,7 +191,6 @@ make -j$(nproc)
 ```bash
 ./uart_test
 ```
-
 실행하면 epoll 이벤트 루프가 동작하며:
 - 2초마다 각 신호등 노드에 `PING` 전송
 - `PONG` 응답 수신 시 콘솔 출력
@@ -540,6 +546,99 @@ void send_range() {
 | UWB 거리 측정 불가 | 안테나 딜레이 미설정 또는 네트워크 ID 불일치 | `setAntennaDelay(16436)`, `setNetworkId(10)` 확인 |
 | `MQTT_CONTROL` 모드에서 웹 조작 불가 | 정상 동작 | UWB로 `command/controlled = 0` 전송하여 HTTP 모드 복귀 |
 
+---
+
+## 신호등 노드 (node_signal) 운용 가이드
+
+> `ESP32/node_signal/` — FSM + LED + UWB signal_state + RPi UART 통합 구현
+
+### FSM Phase 표
+
+| Phase | 차량 신호 | 보행자 신호 | 설명 | 지속 시간 |
+|:-----:|:--------:|:---------:|------|:--------:|
+| 0 | 🟢 GREEN | 🔴 RED | 차량 통행 | 8초 |
+| 1 | 🟡 YELLOW | 🔴 RED | 차량 감속 | 2초 |
+| 2 | 🔴 RED | 🔴 RED | 전환 대기 | 2초 |
+| 3 | 🔴 RED | 🔴 RED | ALL STOP (보행 진입 전) | 1초 |
+| 4 | 🔴 RED | 🟢 GREEN | 보행자 통행 | 5초 (+PED_EXTEND 최대 9초) |
+| 5 | 🔴 RED | 🔴 RED | 보행 종료 대기 | 2초 |
+| 6 | 🔴 RED | 🔴 RED | ALL STOP (차량 진입 전) | 1초 |
+
+---
+
+### ESP32 시리얼 명령어
+
+시리얼 모니터(115200 baud)에서 직접 입력 가능.
+
+| 명령어 | 동작 |
+|--------|------|
+| `RANGE_TRIGGER` | UWB tracking 시작 — 1초마다 `telemetry/signal_state` 송신 |
+| `RANGE_STOP` | UWB tracking 종료 — `telemetry/signal_end` 1회 송신 후 중단 |
+| `PED_EXTEND` | 보행 연장 +3초 (phase 4일 때만, 최대 9초) |
+| `EMERGENCY` | 비상 모드 전환 — 긴급차량 우선 신호 |
+| `STATUS` | 현재 phase / mode / extraWalk / tracking 상태 출력 |
+
+---
+
+### RPi → 신호등 제어 명령어 (command/light)
+
+RPi `uart_test` 프롬프트에서 입력. `N` = 노드 번호 (1 / 2 / 3).
+
+| RPi 입력 | 동작 |
+|----------|------|
+| `CMD N command/light C9` | Node N EMERGENCY 모드 |
+| `CMD N command/light C1` | Node N 차량 GREEN 강제 (phase 0) |
+| `CMD N command/light C0` | Node N 차량 RED 강제 (phase 2) |
+| `CMD N command/light P1` | Node N 보행 연장 +3초 (PED_EXTEND) |
+| `CMD N command/light P0` | Node N 보행 연장 취소 |
+| `CMD command/light C9` | 전체 노드 EMERGENCY |
+| `PING N` | Node N만 PING |
+| `PING` | 전체 노드 PING |
+| `RANGE N` | Node N만 거리 측정 |
+| `RANGE` | 전체 노드 거리 측정 |
+
+**예시:**
+```
+CMD 1 command/light C9      → Node1만 emergency
+CMD 2 command/light P1      → Node2만 보행 연장
+CMD command/light C0        → 전체 차량 RED 강제
+PING 1                      → Node1 생존 확인
+```
+
+---
+
+### UWB signal_state 토픽
+
+신호등 → 차량으로 1초마다 송신 (`telemetry/signal_state`).
+
+**payload 구조: 2바이트 `[stateByte, remainSec]`**
+
+| 비트 | 필드 | 값 |
+|:----:|------|----|
+| bit 0-1 | 차량 신호 | 0=GREEN / 1=YELLOW / 2=RED |
+| bit 2-3 | 보행자 신호 | 0=WALK / 1=RED |
+| bit 4 | pedExtend | 1=연장 중 |
+| bit 5 | emergency | 1=비상 모드 |
+
+**예시:**
+```
+0x04 = 0b00000100 → 차량 RED(2), 보행자 WALK(0), 연장 없음, 비상 없음
+0x14 = 0b00010100 → 차량 RED(2), 보행자 WALK(0), 연장 중
+```
+
+`telemetry/signal_end` — 차량이 threshold 벗어날 때 1회 송신 (세션 종료 알림).
+
+---
+
+### LED 핀 배치 (node_signal)
+
+| LED | ESP32 GPIO |
+|:---:|:---------:|
+| 차량 RED | 13 |
+| 차량 YELLOW | 14 |
+| 차량 GREEN | 15 |
+| 보행자 RED | 32 |
+| 보행자 GREEN | 33 |
 ---
 
 ## 참고 문서
